@@ -1,22 +1,32 @@
 {
-  "name": "dsh-plugin-evaluation-platform",
+  "name": "@dsh-plugin-evaluation/evaluation-platform",
   "version": "0.1.0",
-  "private": true,
+  "description": "Local catalog-governed platform for evaluating DSH plugins",
   "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "dsh-evaluation": "bin/dsh-evaluation.js"
   },
   "files": [
     "bin",
     "public",
-    "src"
+    "src",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/catalog-loader.mjs && node --check src/validation.mjs && node --check src/runtime-config.js && node --check src/managed-dsh-host.js && node --check src/http-api.js && node --check src/plugin-registry.js && node --check src/server.js && node --check src/index.js && node --check bin/dsh-evaluation.js",
-    "start": "node bin/dsh-evaluation.js"
+    "check": "node --check src/catalog-loader.mjs && node --check src/validation.mjs && node --check src/runtime-config.js && node --check src/managed-dsh-host.js && node --check src/http-api.js && node --check src/plugin-registry.js && node --check src/server.js && node --check src/index.js && node --check bin/dsh-evaluation.js && node --check scripts/clean-room.mjs",
+    "start": "node bin/dsh-evaluation.js",
+    "clean-room": "node scripts/clean-room.mjs",
+    "verify": "npm test && npm run check && npm pack --dry-run --json && npm run clean-room"
   }
 }
