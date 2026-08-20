@@ -13,12 +13,16 @@ jobs:
         with:
           repository: dsh-plugin-evaluation/dsh-plugin-evaluation-standards
           ref: v1.1.0
-          path: ../dsh-plugin-evaluation-standards
+          path: fixtures/dsh-plugin-evaluation-standards
       - uses: actions/checkout@v4
         with:
           repository: dsh-plugin-evaluation/dsh-security-evaluation-dataset
           ref: v1.1.0
-          path: ../dsh-security-evaluation-dataset
+          path: fixtures/dsh-security-evaluation-dataset
+      - run: |
+          mkdir -p "$HOME/Desktop/dsh-project"
+          ln -s "$GITHUB_WORKSPACE/fixtures/dsh-plugin-evaluation-standards" "$HOME/Desktop/dsh-project/dsh-plugin-evaluation-standards"
+          ln -s "$GITHUB_WORKSPACE/fixtures/dsh-security-evaluation-dataset" "$HOME/Desktop/dsh-project/dsh-security-evaluation-dataset"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
