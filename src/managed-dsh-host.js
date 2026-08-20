@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -44,7 +44,24 @@ async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))
 }
 
-async function validatePlugin(path) {
+async function hashPluginTree(root) {
+  const hash = createHash('sha256')
+  async function visit(current) {
+    const entries = (await readdir(current, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))
+    for (const entry of entries) {
+      const path = resolve(current, entry.name)
+      const info = await lstat(path)
+      const relativePath = relative(root, path).split(process.platform === 'win32' ? '\\' : '/').join('/')
+      hash.update(`${relativePath}\0${info.isDirectory() ? 'd' : 'f'}\0`)
+      if (info.isDirectory()) await visit(path)
+      else if (info.isFile()) hash.update(await readFile(path))
+    }
+  }
+  await visit(root)
+  return hash.digest('hex')
+}
+
+async function validatePlugin(path, registryRecord) {
   let manifest
   try {
     manifest = await readJson(resolve(path, 'package.json'))
@@ -70,8 +87,10 @@ async function validatePlugin(path) {
   return {
     name: manifest.name,
     version: typeof manifest.version === 'string' ? manifest.version : undefined,
-    checksum,
+    patchHash: checksum,
+    contentHash: registryRecord?.contentHash ?? await hashPluginTree(path),
     manifestHash: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+    registry: registryRecord === undefined ? undefined : { id: registryRecord.id, canonicalSourceIdentity: registryRecord.canonicalSourceIdentity, contentHash: registryRecord.contentHash, packageManifestHash: registryRecord.packageManifestHash },
   }
 }
 
@@ -112,7 +131,7 @@ export class ManagedDshHost {
     return { running: true, runId: this.#active.runId, profile: this.#active.profile, startedAt: this.#active.startedAt, spawned: this.#active.spawned, terminating: this.#active.terminating }
   }
 
-  async start({ pluginPaths, prompt, timeoutMs = this.#timeoutMs } = {}) {
+  async start({ pluginPaths, prompt, timeoutMs = this.#timeoutMs, pluginRecords = [] } = {}) {
     if (this.#active !== null) throw new DshHostBusyError()
     if (!Array.isArray(pluginPaths) || pluginPaths.length === 0) throw new DshRunError('At least one plugin must be selected', 'plugin-required')
     if (typeof prompt !== 'string' || prompt.trim() === '') throw new DshRunError('Prompt is required', 'prompt-required')
@@ -124,26 +143,29 @@ export class ManagedDshHost {
     process.once('SIGTERM', signalHandler)
     try {
       const plugins = []
-      for (const path of pluginPaths) plugins.push({ path, ...(await validatePlugin(path)) })
+      for (const [index, path] of pluginPaths.entries()) plugins.push({ path, ...(await validatePlugin(path, pluginRecords[index])) })
       const runtime = await this.#runtimeResolver(this.#runtimeOptions)
       dataRoot = await mkdtemp(resolve(tmpdir(), this.#tempPrefix))
       const dshHome = resolve(dataRoot, 'dsh-home')
+      const workspace = resolve(dataRoot, 'workspace')
+      await mkdir(workspace)
       const env = { ...process.env, ...(this.#runtimeOptions.env ?? {}), DSH_HOME: dshHome }
       const install = await this.#runChild([runtime.cli, 'plugin', '--profile', active.profile, 'add', ...pluginPaths.map(path => `link:${path}`), `link:${runtime.headlessBundle}`], { cwd: runtime.root, env, timeoutMs, active })
       this.#throwForProcess(install, 'plugin installation')
       const activation = await verifyActivation(dshHome, active.profile, pluginPaths, runtime.headlessBundle)
-      const result = await this.#runChild([runtime.cli, '--profile', active.profile, prompt], { cwd: runtime.root, env, timeoutMs, active })
+      const result = await this.#runChild([runtime.cli, '--profile', active.profile, prompt], { cwd: workspace, env, timeoutMs, active })
       this.#throwForProcess(result, 'DSH evaluation')
       return {
         runId: active.runId,
         profile: active.profile,
         exitCode: result.exitCode,
+        durationMs: result.durationMs,
         stdout: redact(result.stdout),
         stderr: redact(result.stderr),
         activation,
         provenance: {
           ...(this.#runtimeOptions.provenance ?? {}),
-          plugin: plugins.map(plugin => ({ name: plugin.name, ...(plugin.version === undefined ? {} : { version: plugin.version }), contentHash: plugin.checksum, manifestHash: plugin.manifestHash })),
+          plugin: plugins.map(plugin => ({ name: plugin.name, ...(plugin.version === undefined ? {} : { version: plugin.version }), ...(plugin.contentHash === undefined ? {} : { contentHash: plugin.contentHash }), patchHash: plugin.patchHash, manifestHash: plugin.manifestHash, ...(plugin.registry === undefined ? {} : { registry: plugin.registry }) })),
         },
       }
     } finally {
@@ -169,6 +191,7 @@ export class ManagedDshHost {
 
   #runChild(args, { cwd, env, timeoutMs, active }) {
     return new Promise((resolvePromise, reject) => {
+      const startedAt = Date.now()
       let child
       try {
         child = this.#spawn(process.execPath, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
@@ -189,7 +212,7 @@ export class ManagedDshHost {
         settled = true
         clearTimeout(timer)
         clearTimeout(escalation)
-        resolvePromise({ ...result, stdout, stderr, timedOut, terminated })
+        resolvePromise({ ...result, stdout, stderr, timedOut, terminated, durationMs: Date.now() - startedAt })
       }
       const kill = (signal) => {
         if (process.platform !== 'win32' && child.pid !== undefined) {

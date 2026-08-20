@@ -59,14 +59,17 @@ test('rejects a plain plugin without a dsh bundle declaration', async () => {
   await rm(plugin, { recursive: true, force: true })
 })
 
-test('uses a private DSH_HOME and cleans it after success', async () => {
-  const runtime = await fixture('if (process.argv.includes("add")) process.exit(0); process.stdout.write(process.env.DSH_HOME)')
+test('uses a private DSH_HOME and workspace and cleans them after success', async () => {
+  const runtime = await fixture('if (process.argv.includes("add")) process.exit(0); process.stdout.write(JSON.stringify({ home: process.env.DSH_HOME, cwd: process.cwd() }))')
   const plugin = await pluginFixture()
   const personalHome = process.env.DSH_HOME
   const host = new ManagedDshHost({ runtime: { env: { PLATFORM_DSH_ROOT: runtime.root } } })
   const result = await host.start({ pluginPaths: [plugin], prompt: 'hello' })
-  assert.notEqual(result.stdout, personalHome)
-  assert.match(result.stdout, /dsh-home/)
+  const isolation = JSON.parse(result.stdout)
+  assert.notEqual(isolation.home, personalHome)
+  assert.match(isolation.home, /dsh-home/)
+  assert.match(isolation.cwd, /workspace/)
+  assert.equal(typeof result.durationMs, 'number')
   assert.equal(result.provenance.plugin[0].version, '1.2.3')
   assert.equal(result.provenance.plugin[0].contentHash.length, 64)
   assert.equal(result.provenance.plugin[0].manifestHash.length, 64)

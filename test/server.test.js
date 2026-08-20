@@ -37,3 +37,7 @@ test('startup server does not execute fixture evaluations', async () => {
     await close(server)
   }
 })
+
+test('rejects non-loopback binds unless explicitly enabled', async () => {
+  await assert.rejects(startServer({ host: '0.0.0.0', port: 0 }), /non-loopback/)
+})

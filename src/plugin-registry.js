@@ -191,6 +191,7 @@ export class PluginRegistry {
   #root
   #runner
   #now
+  #installLocks = new Map()
 
   constructor({ root, packageManagerRunner = defaultPackageManagerRunner, now = () => new Date() } = {}) {
     if (typeof root !== 'string' || root.length === 0 || !isAbsolute(root)) fail('registry root must be an absolute path', 'invalid-registry-root')
@@ -224,10 +225,16 @@ export class PluginRegistry {
   }
 
   async #install(source, prepare) {
+    const id = recordId(source.name, source.canonicalSource)
+    const previous = this.#installLocks.get(id)
+    let release
+    const current = new Promise(resolvePromise => { release = resolvePromise })
+    this.#installLocks.set(id, current)
+    if (previous !== undefined) await previous
+    try {
     await mkdir(this.#root, { recursive: true })
     const records = await loadRecords(join(this.#root, MANIFEST))
-    const identity = source.kind === 'local' ? source.canonicalSource : source.canonicalSource
-    const id = recordId(source.name, identity)
+    if (records[id] !== undefined) return structuredClone(records[id])
     const temporaryRoot = await mkdtemp(join(this.#root, `.install-${id}-`))
     const destination = join(this.#root, id)
     assertInside(this.#root, destination)
@@ -249,6 +256,10 @@ export class PluginRegistry {
       await rm(temporaryRoot, { recursive: true, force: true })
       await rm(`${temporaryRoot}-content`, { recursive: true, force: true })
       throw error
+    }
+    } finally {
+      if (this.#installLocks.get(id) === current) this.#installLocks.delete(id)
+      release()
     }
   }
 

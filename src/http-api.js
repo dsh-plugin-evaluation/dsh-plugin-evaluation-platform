@@ -32,18 +32,37 @@ function json(res, status, body, headers = {}) {
 
 function validateRunInput(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Object.assign(new Error('Request body must be an object'), { code: 'invalid-body' })
-  const allowed = ['pluginPaths', 'prompt', 'timeoutMs', 'provenance']
+  const allowed = ['pluginPaths', 'pluginIds', 'prompt', 'scheme', 'timeoutMs', 'provenance']
   if (Object.keys(body).some(key => !allowed.includes(key))) throw Object.assign(new Error('Request body contains unsupported fields'), { code: 'invalid-body' })
-  if (!Array.isArray(body.pluginPaths) || body.pluginPaths.length === 0 || body.pluginPaths.length > MAX_PLUGIN_PATHS) throw Object.assign(new Error('pluginPaths must contain 1 to 32 paths'), { code: 'invalid-plugin-paths' })
-  if (body.pluginPaths.some(path => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'))) throw Object.assign(new Error('pluginPaths must be absolute local paths'), { code: 'invalid-plugin-paths' })
-  if (typeof body.prompt !== 'string' || body.prompt.trim() === '' || body.prompt.length > MAX_PROMPT_LENGTH) throw Object.assign(new Error('prompt is required and must be at most 32768 characters'), { code: 'invalid-prompt' })
+  if (body.pluginPaths !== undefined && (!Array.isArray(body.pluginPaths) || body.pluginPaths.length > MAX_PLUGIN_PATHS)) throw Object.assign(new Error('pluginPaths must contain at most 32 paths'), { code: 'invalid-plugin-paths' })
+  if (body.pluginIds !== undefined && (!Array.isArray(body.pluginIds) || body.pluginIds.length > MAX_PLUGIN_PATHS)) throw Object.assign(new Error('pluginIds must contain at most 32 ids'), { code: 'invalid-plugin-ids' })
+  if (body.pluginIds !== undefined && body.pluginPaths !== undefined) throw Object.assign(new Error('Use either pluginIds or pluginPaths, not both'), { code: 'invalid-plugin-selector' })
+  if ((body.pluginPaths === undefined || body.pluginPaths.length === 0) && (body.pluginIds === undefined || body.pluginIds.length === 0)) throw Object.assign(new Error('At least one plugin path or id is required'), { code: 'plugin-required' })
+  if (body.pluginPaths?.some(path => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'))) throw Object.assign(new Error('pluginPaths must be absolute local paths'), { code: 'invalid-plugin-paths' })
+  if (body.pluginIds?.some(id => typeof id !== 'string' || id.length === 0)) throw Object.assign(new Error('pluginIds must be non-empty strings'), { code: 'invalid-plugin-ids' })
+  if (body.prompt !== undefined && body.scheme !== undefined) throw Object.assign(new Error('Use either prompt or scheme, not both'), { code: 'invalid-scheme' })
+  if (body.scheme !== undefined && (!body.scheme || typeof body.scheme !== 'object' || Array.isArray(body.scheme) || typeof body.scheme.id !== 'string' || body.scheme.id.length === 0 || typeof body.scheme.version !== 'string' || body.scheme.version.length === 0 || typeof body.scheme.prompt !== 'string')) throw Object.assign(new Error('scheme must contain non-empty id, version, and prompt'), { code: 'invalid-scheme' })
+  const prompt = body.scheme?.prompt ?? body.prompt
+  if (typeof prompt !== 'string' || prompt.trim() === '' || prompt.length > MAX_PROMPT_LENGTH) throw Object.assign(new Error('prompt is required and must be at most 32768 characters'), { code: 'invalid-prompt' })
   if (body.timeoutMs !== undefined && (!Number.isInteger(body.timeoutMs) || body.timeoutMs < 1 || body.timeoutMs > 600_000)) throw Object.assign(new Error('timeoutMs must be an integer from 1 to 600000'), { code: 'invalid-timeout' })
   return {
-    pluginPaths: [...body.pluginPaths],
-    prompt: body.prompt,
+    ...(body.pluginPaths === undefined ? {} : { pluginPaths: [...body.pluginPaths] }),
+    ...(body.pluginIds === undefined ? {} : { pluginIds: [...body.pluginIds] }),
+    prompt,
     ...(body.timeoutMs === undefined ? {} : { timeoutMs: body.timeoutMs }),
-    ...(body.provenance === undefined ? {} : { provenance: body.provenance }),
+    ...((body.provenance === undefined && body.scheme === undefined) ? {} : { provenance: { ...(body.provenance ?? {}), ...(body.scheme === undefined ? {} : { scheme: { id: body.scheme.id, version: body.scheme.version } }) } }),
   }
+}
+
+function validatePluginRegistration(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw Object.assign(new Error('Request body must be an object'), { code: 'invalid-body' })
+  const allowed = ['path', 'spec', 'cwd']
+  if (Object.keys(body).some(key => !allowed.includes(key))) throw Object.assign(new Error('Request body contains unsupported fields'), { code: 'invalid-body' })
+  if ((body.path === undefined) === (body.spec === undefined)) throw Object.assign(new Error('Exactly one of path or spec is required'), { code: 'invalid-plugin-registration' })
+  if (body.path !== undefined && (typeof body.path !== 'string' || body.path.length === 0)) throw Object.assign(new Error('path must be a non-empty string'), { code: 'invalid-plugin-registration' })
+  if (body.spec !== undefined && (typeof body.spec !== 'string' || body.spec.length === 0)) throw Object.assign(new Error('spec must be a non-empty string'), { code: 'invalid-plugin-registration' })
+  if (body.cwd !== undefined && (typeof body.cwd !== 'string' || !isAbsolute(body.cwd))) throw Object.assign(new Error('cwd must be an absolute path'), { code: 'invalid-plugin-registration' })
+  return body
 }
 
 async function readBody(req) {
@@ -63,10 +82,24 @@ function publicPlugin(plugin) {
   return { id: plugin.id ?? plugin.name, name: plugin.name ?? plugin.id, ...(plugin.version === undefined ? {} : { version: plugin.version }), ...(plugin.type === undefined ? {} : { type: plugin.type }) }
 }
 
-export function createLocalApiServer({ host, plugins = [], sources = [], catalog = null, now = () => Date.now() } = {}) {
+export function createLocalApiServer({ host, registry, plugins = [], sources = [], catalog = null, now = () => Date.now() } = {}) {
   if (!host || typeof host.start !== 'function' || typeof host.status !== 'function' || typeof host.terminate !== 'function') throw new TypeError('host must provide start, status, and terminate')
   const orchestrator = new EvaluationOrchestrator({ host, now })
 
+  const listPlugins = async () => {
+    const registered = registry === undefined ? [] : await registry.list()
+    return [...plugins.map(publicPlugin), ...registered.map(record => ({ id: record.id, name: record.packageName, version: record.packageVersion, sourceKind: record.sourceKind, contentHash: record.contentHash, packageManifestHash: record.packageManifestHash }))]
+  }
+  const resolvePluginPaths = async input => {
+    if (input.pluginIds === undefined) return input.pluginPaths
+    if (registry === undefined) throw Object.assign(new Error('Plugin registry is not configured'), { code: 'registry-unavailable' })
+    const registered = await registry.list()
+    const byId = new Map(registered.map(record => [record.id, record]))
+    const records = input.pluginIds.map(id => byId.get(id))
+    const paths = records.map(record => record?.installedPath)
+    if (paths.some(path => path === undefined)) throw Object.assign(new Error('One or more registered plugins were not found'), { code: 'plugin-not-found' })
+    return { paths, records }
+  }
   const listSources = () => Array.isArray(sources) && sources.length > 0 ? sources.map(source => redactValue(source)) : catalog?.profiles?.map(profile => ({ id: profile.id, version: profile.version, repository: profile.source?.repository, ref: profile.source?.ref, profilePath: profile.source?.profilePath })) ?? []
   const route = async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -75,7 +108,13 @@ export function createLocalApiServer({ host, plugins = [], sources = [], catalog
     try {
       if (req.method === 'GET' && path === '/health') return json(res, 200, { apiVersion: 'v1', status: 'ok' })
       if (req.method === 'GET' && path === '/status') return json(res, 200, { apiVersion: 'v1', ...orchestrator.status() })
-      if (req.method === 'GET' && path === '/plugins') return json(res, 200, { plugins: plugins.map(publicPlugin) })
+      if (req.method === 'GET' && path === '/plugins') return json(res, 200, { plugins: await listPlugins() })
+      if (req.method === 'POST' && path === '/plugins') {
+        if (registry === undefined) throw Object.assign(new Error('Plugin registry is not configured'), { code: 'registry-unavailable' })
+        const input = validatePluginRegistration(await readBody(req))
+        const record = input.path === undefined ? await registry.installPackage(input.spec) : await registry.installLocal(input.path, { cwd: input.cwd })
+        return json(res, 201, { plugin: record })
+      }
       if (req.method === 'GET' && path === '/sources') return json(res, 200, { sources: listSources() })
       if (req.method === 'GET' && path === '/runs') return json(res, 200, { runs: orchestrator.listRuns() })
 
@@ -85,7 +124,8 @@ export function createLocalApiServer({ host, plugins = [], sources = [], catalog
       const exportMatch = /^(?:\/reports\/([^/]+)\/export|\/export\/([^/]+))$/.exec(path)
       if (req.method === 'POST' && path === '/runs') {
         const input = validateRunInput(await readBody(req))
-        return json(res, 202, orchestrator.start(input))
+        const resolved = await resolvePluginPaths(input)
+        return json(res, 202, orchestrator.start({ ...input, pluginPaths: resolved.paths ?? resolved, ...(resolved.records === undefined ? {} : { pluginRecords: resolved.records }) }))
       }
       if (req.method === 'GET' && runMatch) {
         const run = orchestrator.getRun(runMatch[1])

@@ -10,14 +10,17 @@ frontend build.
 From a published package:
 
 ```sh
-npm install @dsh-plugin-evaluation/evaluation-platform@0.1.0
+npm install @dsh-plugin-evaluation/evaluation-platform@0.1.5
 npx dsh-evaluation
 ```
 
 The default listener is `http://127.0.0.1:3000`. Set `HOST` and `PORT` to
 change the bind address. Open `/` for the console, or call `/api/v1/health`
-for a machine-readable readiness check. The default CLI uses a fixture host,
-so it is safe to start while configuring a real DSH runtime.
+for a machine-readable readiness check. Without `PLATFORM_DSH_ROOT`, the CLI
+uses a fixture host and does not execute evaluations. Set `PLATFORM_DSH_ROOT`
+to a DSH checkout for live runs. The plugin registry defaults to
+`~/.dsh-evaluation/registry`; override it with
+`DSH_EVALUATION_REGISTRY_ROOT`.
 
 ## Release
 
@@ -60,12 +63,15 @@ The server uses only Node's built-in `http` module and serves the versioned
 `/api/v1` surface:
 
 - `GET /health`, `/status`, `/plugins`, `/sources`, `/runs`, and `/reports`
+- `POST /plugins` to register a local plugin (`{"path":"/absolute/plugin"}`)
 - `POST /runs` to start a single managed evaluation
 - `GET /runs/:runId` and `POST /runs/:runId/cancel`
 - `GET /reports/:reportId` and `GET /reports/:reportId/export`
 
-Run requests accept only absolute local plugin paths, a non-empty prompt, and
-an optional bounded timeout. Request bodies are capped at 64 KiB. Responses,
+Run requests accept registered `pluginIds` or absolute local plugin paths, plus
+either a non-empty `prompt` or a versioned `scheme` containing `id`, `version`,
+and `prompt`. The scheme identity is copied into report provenance. Request
+bodies are capped at 64 KiB. Responses,
 run output, errors, reports, and exports redact credential-like values. The
 browser console is served from `/`; API traffic is kept under `/api/v1`.
 

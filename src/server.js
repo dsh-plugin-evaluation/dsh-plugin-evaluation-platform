@@ -1,8 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
 import { dirname, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createLocalApiServer } from './http-api.js'
+import { ManagedDshHost } from './managed-dsh-host.js'
+import { PluginRegistry } from './plugin-registry.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const INDEX_PATH = resolve(ROOT, 'public/index.html')
@@ -17,8 +20,18 @@ export function createFixtureHost() {
   }
 }
 
-export function createEvaluationServer({ host = createFixtureHost(), plugins = [], sources = [], catalog = null, indexPath = INDEX_PATH } = {}) {
-  const apiServer = createLocalApiServer({ host, plugins, sources, catalog })
+export function createConfiguredHost(env = process.env) {
+  if (typeof env.PLATFORM_DSH_ROOT !== 'string' || env.PLATFORM_DSH_ROOT.length === 0) return createFixtureHost()
+  return new ManagedDshHost({ runtime: { env: { PLATFORM_DSH_ROOT: env.PLATFORM_DSH_ROOT } } })
+}
+
+export function createConfiguredRegistry(env = process.env) {
+  const root = env.DSH_EVALUATION_REGISTRY_ROOT ?? resolve(env.DSH_EVALUATION_DATA_ROOT ?? resolve(homedir(), '.dsh-evaluation'), 'registry')
+  return new PluginRegistry({ root })
+}
+
+export function createEvaluationServer({ host = createConfiguredHost(), registry = createConfiguredRegistry(), plugins = [], sources = [], catalog = null, indexPath = INDEX_PATH } = {}) {
+  const apiServer = createLocalApiServer({ host, registry, plugins, sources, catalog })
   const indexPromise = readFile(indexPath)
   return createHttpServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -44,6 +57,7 @@ export function createEvaluationServer({ host = createFixtureHost(), plugins = [
 
 export async function startServer({ port = Number(process.env.PORT ?? DEFAULT_PORT), host = process.env.HOST ?? DEFAULT_HOST, ...options } = {}) {
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new RangeError('port must be an integer from 0 to 65535')
+  if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost' && process.env.DSH_EVALUATION_ALLOW_INSECURE_NETWORK !== '1') throw new Error('Refusing non-loopback host without DSH_EVALUATION_ALLOW_INSECURE_NETWORK=1')
   const server = createEvaluationServer(options)
   await new Promise((resolvePromise, reject) => {
     server.once('error', reject)

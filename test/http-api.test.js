@@ -76,3 +76,24 @@ test('rejects malformed and oversized JSON bodies before starting a run', async 
     assert.equal(oversized.body.error.code, 'body-too-large')
   })
 })
+
+test('accepts a versioned scheme and records its identity in the report', async () => {
+  const host = { status: () => ({ running: false }), terminate: () => false, start: async input => ({ stdout: input.prompt, exitCode: 0 }) }
+  await withServer(host, async base => {
+    const created = await request(base, '/api/v1/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pluginPaths: ['/tmp/plugin'], scheme: { id: 'basic-scheme', version: '1.0.0', prompt: 'evaluate this' } }) })
+    assert.equal(created.response.status, 202)
+    await new Promise(resolve => setImmediate(resolve))
+    const report = await request(base, `/api/v1/reports/${created.body.runId}`)
+    assert.deepEqual(report.body.provenance.scheme, { id: 'basic-scheme', version: '1.0.0' })
+    assert.equal(report.body.result.stdout, 'evaluate this')
+  })
+})
+
+test('rejects mixed plugin selectors', async () => {
+  const host = { status: () => ({ running: false }), terminate: () => false, start: async () => ({}) }
+  await withServer(host, async base => {
+    const result = await request(base, '/api/v1/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pluginIds: ['registered'], pluginPaths: ['/tmp/plugin'], prompt: 'evaluate' }) })
+    assert.equal(result.response.status, 400)
+    assert.equal(result.body.error.code, 'invalid-plugin-selector')
+  })
+})

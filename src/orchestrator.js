@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { redact } from './managed-dsh-host.js'
 
 function publicError(error) {
-  return { code: error?.code ?? 'evaluation-failed', message: redact(error?.message ?? 'Evaluation failed'), details: redact(error?.details ?? {}) }
+  return { code: error?.code ?? 'evaluation-failed', message: redact(error?.message ?? 'Evaluation failed'), details: redactValue(error?.details ?? {}) }
 }
 
 export class EvaluationOrchestrator {
@@ -39,13 +39,13 @@ export class EvaluationOrchestrator {
       run.progress = 100
       run.finishedAt = this.#now()
       run.result = redactValue(result)
-      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: result?.summary ?? { status: result?.status ?? 'passed' }, provenance: result?.provenance ?? run.provenance, result: run.result })
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: run.finishedAt - run.startedAt, summary: result?.summary ?? { status: result?.status ?? 'passed' }, provenance: { ...run.provenance, ...(result?.provenance ?? {}) }, result: run.result })
     }).catch(error => {
       run.status = error?.code === 'terminated' ? 'cancelled' : 'failed'
       run.progress = 100
       run.finishedAt = this.#now()
       run.error = publicError(error)
-      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: run.finishedAt - run.startedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
     })
     return structuredClone(run)
   }
@@ -59,7 +59,7 @@ export class EvaluationOrchestrator {
       run.progress = 100
       run.finishedAt = this.#now()
       run.error = { code: 'cancelled', message: 'Evaluation was cancelled before starting', details: {} }
-      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: run.finishedAt - run.startedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
       return { accepted: true, run: structuredClone(run) }
     }
     if (!this.#host.terminate()) return { accepted: false, code: 'run-not-cancellable' }

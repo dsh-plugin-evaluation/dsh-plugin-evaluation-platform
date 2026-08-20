@@ -3,5 +3,5 @@ export { DshHostBusyError, DshRunError, ManagedDshHost, redact } from './managed
 export { JsonStorage, STORAGE_COLLECTIONS, StorageError } from './json-storage.mjs'
 export { createLocalApiServer, MAX_BODY_BYTES } from './http-api.js'
 export { PluginRegistry, PluginRegistryError, discoverLocalPlugin, discoverPackagePlugin, parsePackageSpec } from './plugin-registry.js'
-export { createEvaluationServer, createFixtureHost, startServer } from './server.js'
+export { createConfiguredHost, createConfiguredRegistry, createEvaluationServer, createFixtureHost, startServer } from './server.js'
 export { EvaluationOrchestrator } from './orchestrator.js'

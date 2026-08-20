@@ -86,6 +86,16 @@ test('installs local and package plugins in an isolated registry with stable pro
   assert.equal((await lstat(external)).isDirectory(), true)
 })
 
+test('returns the existing local registration on retry', async t => {
+  const source = await localFixture('retry-plugin')
+  const root = await mkdtemp(join(tmpdir(), 'plugin-registry-retry-'))
+  t.after(() => Promise.all([rm(source, { recursive: true, force: true }), rm(root, { recursive: true, force: true })]))
+  const registry = new PluginRegistry({ root })
+  const first = await registry.installLocal(source)
+  const second = await registry.installLocal(source)
+  assert.deepEqual(second, first)
+})
+
 test('removes only installed safe IDs and persists an atomic manifest', async t => {
   const source = await localFixture()
   const root = await mkdtemp(join(tmpdir(), 'plugin-registry-remove-'))

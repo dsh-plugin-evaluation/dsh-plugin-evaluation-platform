@@ -17,6 +17,7 @@ test('queues, completes, and reports a redacted evaluation', async () => {
   assert.doesNotMatch(JSON.stringify(run), /secret-value|hidden/)
   assert.equal(orchestrator.getReport(created.runId).status, 'completed')
   assert.equal(orchestrator.getReport(created.runId).reportSchemaVersion, 1)
+  assert.equal(orchestrator.getReport(created.runId).durationMs, 1)
   assert.equal(orchestrator.getReport(created.runId).summary.status, 'passed')
   assert.deepEqual(orchestrator.getReport(created.runId).provenance, { scheme: { id: 'scheme-v1' } })
 })
