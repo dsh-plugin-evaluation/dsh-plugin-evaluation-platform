@@ -13,7 +13,12 @@ jobs:
         with:
           repository: dsh-plugin-evaluation/dsh-plugin-evaluation-standards
           ref: v1.1.0
-          path: dsh-plugin-evaluation-standards
+          path: ../dsh-plugin-evaluation-standards
+      - uses: actions/checkout@v4
+        with:
+          repository: dsh-plugin-evaluation/dsh-security-evaluation-dataset
+          ref: v1.1.0
+          path: ../dsh-security-evaluation-dataset
       - uses: actions/setup-node@v4
         with:
           node-version: 22
