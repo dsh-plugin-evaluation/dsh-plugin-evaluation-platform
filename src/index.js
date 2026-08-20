@@ -4,3 +4,4 @@ export { JsonStorage, STORAGE_COLLECTIONS, StorageError } from './json-storage.m
 export { createLocalApiServer, MAX_BODY_BYTES } from './http-api.js'
 export { PluginRegistry, PluginRegistryError, discoverLocalPlugin, discoverPackagePlugin, parsePackageSpec } from './plugin-registry.js'
 export { createEvaluationServer, createFixtureHost, startServer } from './server.js'
+export { EvaluationOrchestrator } from './orchestrator.js'

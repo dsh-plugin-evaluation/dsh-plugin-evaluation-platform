@@ -1,15 +1,43 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>DSH Evaluation API</title>
-  </head>
-  <body>
-    <main>
-      <h1>DSH Evaluation API</h1>
-      <p>Local API is running.</p>
-      <p><a href="/api/v1/health">Check health</a></p>
-    </main>
-  </body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH Evaluation API Console</title>
+  <style>
+    :root { color-scheme: dark; --canvas:#111318; --panel:#191d24; --raised:#222832; --text:#f4f1ea; --muted:#9ba4b2; --line:#303846; --accent:#f0a84b; --good:#71d39a; --bad:#f17d7d; }
+    * { box-sizing:border-box; } body { margin:0; background:radial-gradient(circle at 85% 0%,#2c261d 0,#111318 34rem); color:var(--text); font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1180px; margin:0 auto; padding:32px 20px 56px; } header { display:flex; justify-content:space-between; align-items:end; gap:16px; margin-bottom:24px; } h1,h2,p { margin:0; } h1 { font-size:clamp(28px,5vw,48px); letter-spacing:-.04em; } h2 { font-size:17px; } .eyebrow { color:var(--accent); font:12px ui-monospace,SFMono-Regular,monospace; letter-spacing:.12em; text-transform:uppercase; } .lede { color:var(--muted); max-width:650px; margin-top:8px; }
+    button { border:1px solid var(--line); border-radius:8px; background:var(--raised); color:var(--text); cursor:pointer; font:inherit; padding:9px 13px; } button:hover { border-color:var(--accent); } button:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid var(--accent); outline-offset:2px; } button.primary { background:var(--accent); border-color:var(--accent); color:#22170c; font-weight:700; } button:disabled { cursor:not-allowed; opacity:.55; }
+    .grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:16px; } .card { grid-column:span 6; background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:12px; padding:18px; box-shadow:0 18px 50px #0003; } .wide { grid-column:span 12; } .card-head { display:flex; justify-content:space-between; gap:12px; align-items:start; margin-bottom:14px; } .muted { color:var(--muted); } .status { display:inline-flex; align-items:center; gap:6px; border-radius:999px; padding:3px 8px; background:var(--raised); color:var(--muted); font:12px ui-monospace,SFMono-Regular,monospace; } .status::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--muted); } .status.good::before { background:var(--good); } .status.bad::before { background:var(--bad); }
+    form { display:grid; gap:12px; } label { display:grid; gap:6px; color:var(--muted); font-size:13px; } input,textarea { width:100%; border:1px solid var(--line); border-radius:8px; background:#101218; color:var(--text); padding:10px; font:14px ui-monospace,SFMono-Regular,monospace; } textarea { min-height:90px; resize:vertical; } .form-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; } .rows { display:grid; gap:8px; } .row { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:#151920; } .row strong { display:block; } .row small { color:var(--muted); font:12px ui-monospace,SFMono-Regular,monospace; overflow-wrap:anywhere; } .empty { color:var(--muted); padding:16px 0; } #notice { min-height:24px; color:var(--muted); margin:8px 0 16px; } #notice.error { color:var(--bad); }
+    @media (max-width:720px) { header { align-items:start; flex-direction:column; } .card { grid-column:span 12; } .row { align-items:start; flex-direction:column; } }
+    @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; transition:none !important; } }
+  </style>
+</head>
+<body>
+<main>
+  <header><div><div class="eyebrow">Local governed evaluation</div><h1>DSH Evaluation Console</h1><p class="lede">Inspect the local runtime, choose a governed source, run an evaluation, and export its redacted report.</p></div><button id="refresh" type="button">Refresh data</button></header>
+  <div id="notice" aria-live="polite"></div>
+  <section class="grid">
+    <article class="card"><div class="card-head"><div><h2>Runtime status</h2><p class="muted">Private host and persisted activity.</p></div><span id="host-status" class="status">loading</span></div><div id="status-body" class="rows"><div class="empty">Loading…</div></div></article>
+    <article class="card"><div class="card-head"><div><h2>Start evaluation</h2><p class="muted">Absolute local plugin paths are required.</p></div></div><form id="run-form"><label>Plugin paths<input id="plugin-paths" required placeholder="/absolute/path/to/plugin" autocomplete="off"></label><label>Prompt<textarea id="prompt" required placeholder="Describe the evaluation task"></textarea></label><label>Timeout (ms)<input id="timeout" type="number" min="1" max="600000" value="120000"></label><div class="form-actions"><span class="muted">Runs execute in an isolated host.</span><button class="primary" type="submit">Queue run</button></div></form></article>
+    <article class="card"><div class="card-head"><div><h2>Plugins</h2><p class="muted">Registered plugin identities.</p></div></div><div id="plugins" class="rows"><div class="empty">Loading…</div></div></article>
+    <article class="card"><div class="card-head"><div><h2>Sources</h2><p class="muted">Catalog-governed references.</p></div></div><div id="sources" class="rows"><div class="empty">Loading…</div></div></article>
+    <article class="card wide"><div class="card-head"><div><h2>Runs</h2><p class="muted">Progress and cancellation controls.</p></div></div><div id="runs" class="rows"><div class="empty">Loading…</div></div></article>
+    <article class="card wide"><div class="card-head"><div><h2>Reports</h2><p class="muted">Redacted results available for export.</p></div></div><div id="reports" class="rows"><div class="empty">Loading…</div></div></article>
+  </section>
+</main>
+<script>
+  const $ = id => document.getElementById(id)
+  const api = async (path, options) => { const response = await fetch('/api/v1' + path, options); const body = await response.json(); if (!response.ok) throw new Error(body.error?.message || 'Request failed'); return body }
+  const text = value => value == null ? '' : String(value)
+  const row = (title, detail, action) => { const element = document.createElement('div'); element.className='row'; const copy=document.createElement('div'); const strong=document.createElement('strong'); strong.textContent=title; const small=document.createElement('small'); small.textContent=detail; copy.append(strong,small); element.append(copy); if(action) element.append(action); return element }
+  const list = (target, items, empty, render) => { target.replaceChildren(); if (!items.length) { const e=document.createElement('div'); e.className='empty'; e.textContent=empty; target.append(e); return } items.forEach(item => target.append(render(item))) }
+  function showError(error) { $('notice').textContent=error.message; $('notice').className='error' }
+  async function refresh() { try { $('notice').textContent='Refreshing…'; $('notice').className=''; const [status,plugins,sources,runs,reports]=await Promise.all([api('/status'),api('/plugins'),api('/sources'),api('/runs'),api('/reports')]); const host=status.host||{}; $('host-status').textContent=host.running?'running':'ready'; $('host-status').className='status '+(host.running?'':'good'); list($('status-body'),[{title:'Host',detail:JSON.stringify(host)},{title:'Activity',detail:status.runs+' runs · '+status.reports+' reports'}],'No status data',item=>row(item.title,item.detail)); list($('plugins'),plugins.plugins,'No plugins registered',item=>row(item.name,item.id)); list($('sources'),sources.sources,'No sources registered',item=>row(item.id||item.repository||'source',item.ref||item.profilePath||'')); list($('runs'),runs.runs,'No runs yet',item=>{ const action=document.createElement('button'); action.textContent=item.status==='running'||item.status==='queued'?'Cancel':'View'; if(item.status==='running'||item.status==='queued') action.onclick=()=>cancel(item.runId); else action.onclick=()=>location.hash=item.runId; return row(item.status+' · '+(item.progress??0)+'%',item.runId,action) }); list($('reports'),reports.reports,'No reports yet',item=>{ const action=document.createElement('a'); action.href='/api/v1/reports/'+encodeURIComponent(item.runId)+'/export'; action.textContent='Export'; action.style.color='var(--accent)'; return row(item.status,item.runId,action) }); $('notice').textContent='Updated '+new Date().toLocaleTimeString(); } catch(error) { showError(error) } }
+  async function cancel(runId) { try { await api('/runs/'+encodeURIComponent(runId)+'/cancel',{method:'POST'}); await refresh() } catch(error) { showError(error) } }
+  $('refresh').onclick=refresh; $('run-form').onsubmit=async event=>{ event.preventDefault(); try { const pluginPaths=$('plugin-paths').value.split(/\r?\n|,/).map(value=>value.trim()).filter(Boolean); await api('/runs',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pluginPaths,prompt:$('prompt').value,timeoutMs:Number($('timeout').value)})}); $('notice').textContent='Evaluation queued'; $('prompt').value=''; await refresh() } catch(error) { showError(error) } }; refresh(); setInterval(refresh,5000)
+</script>
+</body>
 </html>

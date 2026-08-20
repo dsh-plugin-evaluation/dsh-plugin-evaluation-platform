@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import { basename, isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { redact } from './managed-dsh-host.js'
+import { EvaluationOrchestrator } from './orchestrator.js'
 
 const API_PREFIX = '/api/v1'
 const MAX_BODY_BYTES = 64 * 1024
@@ -59,8 +60,7 @@ function publicPlugin(plugin) {
 
 export function createLocalApiServer({ host, plugins = [], sources = [], catalog = null, now = () => Date.now() } = {}) {
   if (!host || typeof host.start !== 'function' || typeof host.status !== 'function' || typeof host.terminate !== 'function') throw new TypeError('host must provide start, status, and terminate')
-  const runs = new Map()
-  const reports = new Map()
+  const orchestrator = new EvaluationOrchestrator({ host, now })
 
   const listSources = () => Array.isArray(sources) && sources.length > 0 ? sources.map(source => redactValue(source)) : catalog?.profiles?.map(profile => ({ id: profile.id, version: profile.version, repository: profile.source?.repository, ref: profile.source?.ref, profilePath: profile.source?.profilePath })) ?? []
   const route = async (req, res) => {
@@ -69,10 +69,10 @@ export function createLocalApiServer({ host, plugins = [], sources = [], catalog
     const path = url.pathname.slice(API_PREFIX.length) || '/'
     try {
       if (req.method === 'GET' && path === '/health') return json(res, 200, { apiVersion: 'v1', status: 'ok' })
-      if (req.method === 'GET' && path === '/status') return json(res, 200, { apiVersion: 'v1', host: host.status(), runs: runs.size, reports: reports.size })
+      if (req.method === 'GET' && path === '/status') return json(res, 200, { apiVersion: 'v1', ...orchestrator.status() })
       if (req.method === 'GET' && path === '/plugins') return json(res, 200, { plugins: plugins.map(publicPlugin) })
       if (req.method === 'GET' && path === '/sources') return json(res, 200, { sources: listSources() })
-      if (req.method === 'GET' && path === '/runs') return json(res, 200, { runs: [...runs.values()].map(run => redactValue(run)) })
+      if (req.method === 'GET' && path === '/runs') return json(res, 200, { runs: orchestrator.listRuns() })
 
       const runMatch = /^\/runs\/([^/]+)$/.exec(path)
       const cancelMatch = /^\/runs\/([^/]+)\/cancel$/.exec(path)
@@ -80,39 +80,26 @@ export function createLocalApiServer({ host, plugins = [], sources = [], catalog
       const exportMatch = /^(?:\/reports\/([^/]+)\/export|\/export\/([^/]+))$/.exec(path)
       if (req.method === 'POST' && path === '/runs') {
         const input = validateRunInput(await readBody(req))
-        const runId = randomUUID()
-        const run = { runId, status: 'running', startedAt: now() }
-        runs.set(runId, run)
-        Promise.resolve().then(() => host.start(input)).then(result => {
-          const completed = { ...run, status: 'completed', finishedAt: now(), result: redactValue(result) }
-          runs.set(runId, completed)
-          reports.set(runId, { reportId: runId, runId, createdAt: completed.finishedAt, status: completed.status, result: completed.result })
-        }).catch(error => {
-          const failure = { ...run, status: error?.code === 'terminated' ? 'cancelled' : 'failed', finishedAt: now(), error: errorPayload(error).body.error }
-          runs.set(runId, failure)
-          reports.set(runId, { reportId: runId, runId, createdAt: failure.finishedAt, status: failure.status, error: failure.error })
-        })
-        return json(res, 202, run)
+        return json(res, 202, orchestrator.start(input))
       }
       if (req.method === 'GET' && runMatch) {
-        const run = runs.get(runMatch[1])
+        const run = orchestrator.getRun(runMatch[1])
         return run ? json(res, 200, run) : json(res, 404, { error: { code: 'run-not-found', message: 'Run not found' } })
       }
       if ((req.method === 'POST' || req.method === 'DELETE') && cancelMatch) {
-        const run = runs.get(cancelMatch[1])
+        const run = orchestrator.getRun(cancelMatch[1])
         if (!run) return json(res, 404, { error: { code: 'run-not-found', message: 'Run not found' } })
-        if (run.status !== 'running') return json(res, 409, { error: { code: 'run-not-running', message: 'Run is not running' } })
-        if (!host.terminate()) return json(res, 409, { error: { code: 'run-not-cancellable', message: 'Run cannot be cancelled before process start' } })
-        run.status = 'cancelling'
-        return json(res, 202, run)
+        const result = orchestrator.cancel(cancelMatch[1])
+        if (!result.accepted) return json(res, 409, { error: { code: result.code, message: result.code === 'run-not-running' ? 'Run is not running' : 'Run cannot be cancelled' } })
+        return json(res, 202, result.run)
       }
-      if (req.method === 'GET' && path === '/reports') return json(res, 200, { reports: [...reports.values()].map(report => redactValue(report)) })
+      if (req.method === 'GET' && path === '/reports') return json(res, 200, { reports: orchestrator.listReports() })
       if (req.method === 'GET' && reportMatch) {
-        const report = reports.get(reportMatch[1])
+        const report = orchestrator.getReport(reportMatch[1])
         return report ? json(res, 200, report) : json(res, 404, { error: { code: 'report-not-found', message: 'Report not found' } })
       }
       if (req.method === 'GET' && exportMatch) {
-        const report = reports.get(exportMatch[1] ?? exportMatch[2])
+        const report = orchestrator.getReport(exportMatch[1] ?? exportMatch[2])
         if (!report) return json(res, 404, { error: { code: 'report-not-found', message: 'Report not found' } })
         return json(res, 200, report, { 'content-disposition': `attachment; filename="report-${report.runId}.json"` })
       }
