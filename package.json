@@ -1,0 +1,13 @@
+{
+  "name": "dsh-plugin-evaluation-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/catalog-loader.mjs && node --check src/validation.mjs"
+  }
+}
