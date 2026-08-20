@@ -3,11 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "dsh-evaluation": "bin/dsh-evaluation.js"
+  },
+  "files": [
+    "bin",
+    "public",
+    "src"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/catalog-loader.mjs && node --check src/validation.mjs && node --check src/runtime-config.js && node --check src/managed-dsh-host.js && node --check src/http-api.js && node --check src/index.js"
+    "check": "node --check src/catalog-loader.mjs && node --check src/validation.mjs && node --check src/runtime-config.js && node --check src/managed-dsh-host.js && node --check src/http-api.js && node --check src/server.js && node --check src/index.js && node --check bin/dsh-evaluation.js",
+    "start": "node bin/dsh-evaluation.js"
   }
 }
