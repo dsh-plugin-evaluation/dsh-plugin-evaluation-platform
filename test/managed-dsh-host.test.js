@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
@@ -25,7 +26,10 @@ async function pluginFixture({ bundle = true } = {}) {
     ...(bundle ? { dsh: { bundle: { patch: './cordis.patch.yml' } } } : {}),
   }))
   if (bundle) await writeFile(resolve(root, 'cordis.patch.yml'), '[]\n')
-  if (bundle) await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'test-plugin', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+  if (bundle) {
+    const checksum = createHash('sha256').update('[]\n').digest('hex')
+    await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'test-plugin', dsh: { bundle: { patch: './cordis.patch.yml', sha256: checksum } } }))
+  }
   return root
 }
 
@@ -118,6 +122,16 @@ test('supports explicit termination and redacts secrets in output', async () => 
   await rm(plugin, { recursive: true, force: true })
 })
 
+test('uses an environment runtime without requiring a declaration file', async () => {
+  const runtime = await fixture('process.exit(0)')
+  const plugin = await pluginFixture()
+  const host = new ManagedDshHost({ runtime: { declarationPath: '/missing/runtime.json', env: { PLATFORM_DSH_ROOT: runtime.root } } })
+  const result = await host.start({ pluginPaths: [plugin], prompt: 'hello' })
+  assert.equal(result.exitCode, 0)
+  await rm(runtime.root, { recursive: true, force: true })
+  await rm(plugin, { recursive: true, force: true })
+})
+
 test('reports immediate termination as not accepted before child spawn', async () => {
   const runtime = await fixture('process.exit(0)')
   const plugin = await pluginFixture()
@@ -133,8 +147,8 @@ test('reports immediate termination as not accepted before child spawn', async (
 })
 
 test('redacts JSON, whitespace, and Authorization credential variants', () => {
-  const value = redact('{"api_key" : "json-secret", "token": "token-secret", Authorization : "Bearer bearer-secret", password = plain-secret}')
-  assert.doesNotMatch(value, /json-secret|token-secret|bearer-secret|plain-secret/)
+  const value = redact('{"api_key" : "json-secret", "token": "token-secret", Authorization : "Bearer bearer-secret", Authorization:Bearer compact-secret, password = plain-secret}')
+  assert.doesNotMatch(value, /json-secret|token-secret|bearer-secret|compact-secret|plain-secret/)
   assert.match(value, /\[REDACTED\]/)
 })
 
@@ -158,5 +172,34 @@ test('runtime declaration can provide a packaged root', async () => {
   const result = await host.start({ pluginPaths: [plugin], prompt: 'hello' })
   assert.equal(result.exitCode, 0)
   await rm(runtime.root, { recursive: true, force: true })
+  await rm(plugin, { recursive: true, force: true })
+})
+
+test('rejects a bundle when its patch checksum changes', async () => {
+  const runtime = await fixture('process.exit(0)')
+  const plugin = await pluginFixture()
+  await writeFile(resolve(plugin, 'cordis.patch.yml'), '[tampered]\n')
+  const host = new ManagedDshHost({ runtime: { env: { PLATFORM_DSH_ROOT: runtime.root } } })
+  await assert.rejects(host.start({ pluginPaths: [plugin], prompt: 'hello' }), error => error instanceof DshRunError && error.code === 'plugin-checksum-mismatch')
+  await rm(runtime.root, { recursive: true, force: true })
+  await rm(plugin, { recursive: true, force: true })
+})
+
+test('rejects a bundle patch outside the plugin root', async () => {
+  const runtime = await fixture('process.exit(0)')
+  const plugin = await pluginFixture()
+  await writeFile(resolve(plugin, 'package.json'), JSON.stringify({ name: 'test-plugin', dsh: { bundle: { patch: '../outside.patch', sha256: createHash('sha256').update('outside').digest('hex') } } }))
+  const host = new ManagedDshHost({ runtime: { env: { PLATFORM_DSH_ROOT: runtime.root } } })
+  await assert.rejects(host.start({ pluginPaths: [plugin], prompt: 'hello' }), error => error instanceof DshRunError && error.code === 'plugin-invalid')
+  await rm(runtime.root, { recursive: true, force: true })
+  await rm(plugin, { recursive: true, force: true })
+})
+
+test('removes signal handlers after a pre-spawn failure', async () => {
+  const plugin = await pluginFixture()
+  const before = process.listenerCount('SIGTERM')
+  const host = new ManagedDshHost({ runtimeResolver: async () => { throw new Error('resolver failed') } })
+  await assert.rejects(host.start({ pluginPaths: [plugin], prompt: 'hello' }), /resolver failed/)
+  assert.equal(process.listenerCount('SIGTERM'), before)
   await rm(plugin, { recursive: true, force: true })
 })

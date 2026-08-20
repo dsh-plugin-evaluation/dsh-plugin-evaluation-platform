@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve, relative } from 'node:path'
 
 export class DshRuntimeError extends Error {
   constructor(message, code = 'runtime-unavailable') {
@@ -22,11 +22,27 @@ export async function resolveDshRuntime({ env = process.env, declarationPath, re
       throw new DshRuntimeError('DSH runtime is not configured', 'runtime-missing')
     }
   }
+  if (declared !== undefined && (typeof declared !== 'object' || declared === null || Array.isArray(declared))) {
+    throw new DshRuntimeError('Invalid DSH runtime declaration', 'runtime-invalid')
+  }
   const root = rootFromEnv ?? declared?.root
   if (typeof root !== 'string' || root.length === 0) throw new DshRuntimeError('DSH runtime root is missing', 'runtime-missing')
   const runtimeRoot = isAbsolute(root) ? root : resolve(dirname(declaration), root)
-  const cli = resolve(runtimeRoot, typeof declared?.cli === 'string' ? declared.cli : 'apps/cli/lib/bin.js')
-  const headlessBundle = resolve(runtimeRoot, typeof declared?.headlessBundle === 'string' ? declared.headlessBundle : 'packages/bundle/headless')
+  const cliPath = declared?.cli ?? 'apps/cli/lib/bin.js'
+  const bundlePath = declared?.headlessBundle ?? 'packages/bundle/headless'
+  if (typeof cliPath !== 'string' || typeof bundlePath !== 'string' || isAbsolute(cliPath) || isAbsolute(bundlePath)) {
+    throw new DshRuntimeError('Invalid DSH runtime declaration', 'runtime-invalid')
+  }
+  const cli = resolve(runtimeRoot, cliPath)
+  const headlessBundle = resolve(runtimeRoot, bundlePath)
+  const separator = process.platform === 'win32' ? '\\' : '/'
+  const escapesRoot = path => {
+    const child = relative(runtimeRoot, path)
+    return child === '..' || child.startsWith(`..${separator}`) || isAbsolute(child)
+  }
+  if (escapesRoot(cli) || escapesRoot(headlessBundle)) {
+    throw new DshRuntimeError('DSH runtime paths escape the runtime root', 'runtime-invalid')
+  }
   try {
     await accessPath(cli)
   } catch {
@@ -37,5 +53,5 @@ export async function resolveDshRuntime({ env = process.env, declarationPath, re
   } catch {
     throw new DshRuntimeError(`DSH headless bundle is unavailable: ${headlessBundle}`, 'runtime-invalid')
   }
-  return { root: runtimeRoot, cli, headlessBundle, declaration: declarationPath ?? null }
+  return { root: runtimeRoot, cli, headlessBundle, declaration }
 }

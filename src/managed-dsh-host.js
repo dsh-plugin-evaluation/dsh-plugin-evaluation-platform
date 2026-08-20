@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { resolveDshRuntime } from './runtime-config.js'
 
 export class DshHostBusyError extends Error {
@@ -22,20 +22,22 @@ export class DshRunError extends Error {
   }
 }
 
-const SECRET = /(["']?)(api[\s_-]?key|secret|token|password|authorization)\1\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;}\]]+)/giu
+const SECRET = /((?:["'])(?:api[\s_-]?key|secret|token|password|authorization)["']|\b(?:api[\s_-]?key|secret|token|password|authorization)\b)\s*([:=])\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/giu
 const BEARER = /\b(Bearer|Basic)\s+[^\s,;}\]]+/giu
 
 export function redact(text) {
   return String(text ?? '')
-    .replace(SECRET, '$1$2$1$3 [REDACTED]')
     .replace(BEARER, '$1 [REDACTED]')
+    .replace(SECRET, '$1$2 [REDACTED]')
 }
 
 function isBundleManifest(manifest) {
   return typeof manifest === 'object' && manifest !== null
     && typeof manifest.dsh === 'object' && manifest.dsh !== null
     && typeof manifest.dsh.bundle === 'object' && manifest.dsh.bundle !== null
+    && typeof manifest.name === 'string' && manifest.name.length > 0
     && typeof manifest.dsh.bundle.patch === 'string' && manifest.dsh.bundle.patch.length > 0
+    && typeof manifest.dsh.bundle.sha256 === 'string' && /^[a-f0-9]{64}$/iu.test(manifest.dsh.bundle.sha256)
 }
 
 async function readJson(path) {
@@ -50,18 +52,36 @@ async function validatePlugin(path) {
     throw new DshRunError(`Plugin manifest is unavailable: ${path}`, 'plugin-invalid', { path, cause: error instanceof Error ? error.message : String(error) })
   }
   if (!isBundleManifest(manifest)) throw new DshRunError(`Plugin is not a DSH bundle: ${path}`, 'plugin-not-bundle', { path })
+  const patchPath = resolve(path, manifest.dsh.bundle.patch)
+  const patchRelative = relative(path, patchPath)
+  if (patchRelative === '..' || patchRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+    throw new DshRunError(`Plugin bundle patch escapes plugin root: ${path}`, 'plugin-invalid', { path })
+  }
+  let patch
+  try {
+    patch = await readFile(patchPath)
+  } catch (error) {
+    throw new DshRunError(`Plugin bundle patch is unavailable: ${path}`, 'plugin-invalid', { path, cause: error instanceof Error ? error.message : String(error) })
+  }
+  const checksum = createHash('sha256').update(patch).digest('hex')
+  if (checksum.toLowerCase() !== manifest.dsh.bundle.sha256.toLowerCase()) {
+    throw new DshRunError(`Plugin bundle checksum failed: ${path}`, 'plugin-checksum-mismatch', { path, expected: manifest.dsh.bundle.sha256, actual: checksum })
+  }
+  return { name: manifest.name, checksum }
 }
 
 async function verifyActivation(dshHome, profile, pluginPaths, headlessBundle) {
   const manifest = await readJson(resolve(dshHome, 'profiles', profile, 'package.json'))
   const dependencies = manifest.dependencies ?? {}
   const bundles = manifest.dsh?.profile?.bundles ?? []
-  const pluginNames = await Promise.all(pluginPaths.map(async path => (await readJson(resolve(path, 'package.json'))).name))
-  const headlessName = (await readJson(resolve(headlessBundle, 'package.json'))).name
+  const pluginManifests = await Promise.all(pluginPaths.map(async path => readJson(resolve(path, 'package.json'))))
+  const pluginNames = pluginManifests.map(manifest => manifest.name)
+  const headlessManifest = await readJson(resolve(headlessBundle, 'package.json'))
+  const headlessName = headlessManifest.name
   const expected = [...pluginNames, headlessName]
   const missing = expected.filter(name => typeof name !== 'string' || !bundles.includes(name) || dependencies[name] === undefined)
   if (missing.length > 0) throw new DshRunError('DSH profile activation proof failed', 'activation-failed', { profile, missing })
-  return { dependencies: Object.keys(dependencies), bundles: [...bundles] }
+  return { dependencies: Object.keys(dependencies).sort(), bundles: [...bundles].sort(), names: expected.sort() }
 }
 
 export class ManagedDshHost {
@@ -124,9 +144,10 @@ export class ManagedDshHost {
   }
 
   #throwForProcess(result, operation) {
-    if (result.timedOut) throw new DshRunError(`${operation} timed out`, 'timeout', result)
-    if (result.terminated) throw new DshRunError(`${operation} was terminated`, 'terminated', result)
-    if (result.exitCode !== 0) throw new DshRunError(`${operation} failed`, 'nonzero-exit', { ...result, stderr: redact(result.stderr) })
+    const details = { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) }
+    if (result.timedOut) throw new DshRunError(`${operation} timed out`, 'timeout', details)
+    if (result.terminated) throw new DshRunError(`${operation} was terminated`, 'terminated', details)
+    if (result.exitCode !== 0) throw new DshRunError(`${operation} failed`, 'nonzero-exit', details)
   }
 
   #runChild(args, { cwd, env, timeoutMs, active }) {
@@ -152,8 +173,7 @@ export class ManagedDshHost {
           try { process.kill(-child.pid, signal) } catch (error) {
             if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') throw error
           }
-        }
-        child.kill(signal)
+        } else child.kill(signal)
       }
       const timer = setTimeout(() => { timedOut = true; active.terminate?.() }, timeoutMs)
       active.terminate = () => {
@@ -165,7 +185,14 @@ export class ManagedDshHost {
       }
       child.stdout?.on('data', chunk => { stdout += String(chunk) })
       child.stderr?.on('data', chunk => { stderr += String(chunk) })
-      child.once('error', error => { clearTimeout(timer); reject(new DshRunError(`Unable to start DSH: ${error.message}`, 'spawn-failed')) })
+      child.once('error', error => {
+        clearTimeout(timer)
+        clearTimeout(escalation)
+        if (!settled) {
+          settled = true
+          reject(new DshRunError(`Unable to start DSH: ${error.message}`, 'spawn-failed'))
+        }
+      })
       child.once('close', (code, signal) => finish({ exitCode: code ?? 1, signal }))
     })
   }
