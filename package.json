@@ -1,6 +1,6 @@
 {
   "name": "@dsh-plugin-evaluation/evaluation-platform",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local catalog-governed platform for evaluating DSH plugins",
   "type": "module",
   "main": "./src/index.js",
