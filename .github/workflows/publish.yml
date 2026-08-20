@@ -1,0 +1,59 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-evaluation-platform-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: dsh-plugin-evaluation/dsh-plugin-evaluation-standards
+          ref: v1.1.0
+          path: fixtures/dsh-plugin-evaluation-standards
+      - uses: actions/checkout@v4
+        with:
+          repository: dsh-plugin-evaluation/dsh-security-evaluation-dataset
+          ref: v1.1.0
+          path: fixtures/dsh-security-evaluation-dataset
+
+      - run: |
+          mkdir -p "$HOME/Desktop/dsh-project"
+          ln -s "$GITHUB_WORKSPACE/fixtures/dsh-plugin-evaluation-standards" "$HOME/Desktop/dsh-project/dsh-plugin-evaluation-standards"
+          ln -s "$GITHUB_WORKSPACE/fixtures/dsh-security-evaluation-dataset" "$HOME/Desktop/dsh-project/dsh-security-evaluation-dataset"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          test "$tag_version" = "$package_version" || {
+            echo "Tag v$tag_version does not match package.json version $package_version" >&2
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: npm install --package-lock=false --ignore-scripts --no-audit --no-fund
+
+      - name: Verify package
+        run: npm run verify
+
+      - name: Publish package
+        run: npm publish --access public --provenance
