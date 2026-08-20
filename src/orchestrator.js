@@ -28,9 +28,10 @@ export class EvaluationOrchestrator {
 
   start(input) {
     const runId = randomUUID()
-    const run = { runId, status: 'queued', progress: 0, startedAt: this.#now() }
+    const run = { runId, status: 'queued', progress: 0, startedAt: this.#now(), provenance: input?.provenance ?? {} }
     this.#runs.set(runId, run)
     Promise.resolve().then(async () => {
+      if (run.status !== 'queued') return
       run.status = 'running'
       run.progress = 10
       const result = await this.#host.start(input)
@@ -38,13 +39,13 @@ export class EvaluationOrchestrator {
       run.progress = 100
       run.finishedAt = this.#now()
       run.result = redactValue(result)
-      this.#reports.set(runId, { reportId: runId, runId, status: run.status, createdAt: run.finishedAt, result: run.result })
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: result?.summary ?? { status: result?.status ?? 'passed' }, provenance: result?.provenance ?? run.provenance, result: run.result })
     }).catch(error => {
       run.status = error?.code === 'terminated' ? 'cancelled' : 'failed'
       run.progress = 100
       run.finishedAt = this.#now()
       run.error = publicError(error)
-      this.#reports.set(runId, { reportId: runId, runId, status: run.status, createdAt: run.finishedAt, error: run.error })
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
     })
     return structuredClone(run)
   }
@@ -53,6 +54,14 @@ export class EvaluationOrchestrator {
     const run = this.#runs.get(runId)
     if (!run) return { accepted: false, code: 'run-not-found' }
     if (run.status !== 'running' && run.status !== 'queued') return { accepted: false, code: 'run-not-running' }
+    if (run.status === 'queued') {
+      run.status = 'cancelled'
+      run.progress = 100
+      run.finishedAt = this.#now()
+      run.error = { code: 'cancelled', message: 'Evaluation was cancelled before starting', details: {} }
+      this.#reports.set(runId, { reportSchemaVersion: 1, reportId: runId, runId, status: run.status, createdAt: run.finishedAt, startedAt: run.startedAt, finishedAt: run.finishedAt, summary: { status: run.status }, provenance: run.provenance, error: run.error })
+      return { accepted: true, run: structuredClone(run) }
+    }
     if (!this.#host.terminate()) return { accepted: false, code: 'run-not-cancellable' }
     run.status = 'cancelling'
     return { accepted: true, run: structuredClone(run) }
