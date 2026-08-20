@@ -27,17 +27,20 @@ function assertKeys(value, allowed, label) {
 
 export function assertSafeRelativePath(value, label) {
   assert(typeof value === 'string' && value.length > 0, `${label} path is required`)
+  const literalSeparators = [...value].filter(character => character === '/').length
   let decoded = value
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    let next
     try {
-      const next = decodeURIComponent(decoded)
-      if (next === decoded) break
-      decoded = next
+      next = decodeURIComponent(decoded)
     } catch {
       throw new SourceValidationError(`${label} path contains malformed encoding`)
     }
+    if (next === decoded) break
+    decoded = next
+    assert([...decoded].filter(character => character === '/').length <= literalSeparators, `${label} path must not encode separators`)
+    assert(!decoded.includes('\\') && !decoded.includes('\0'), `${label} path must be relative`)
   }
-  assert(!/%(?:25)*2f|%(?:25)*5c/i.test(value), `${label} path must not encode separators`)
   assert(!decoded.startsWith('/') && !decoded.includes('\\') && !decoded.includes('\0'), `${label} path must be relative`)
   const segments = decoded.split('/')
   assert(!segments.includes('..'), `${label} path must not escape its source root`)

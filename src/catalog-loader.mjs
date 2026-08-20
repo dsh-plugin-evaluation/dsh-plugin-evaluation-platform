@@ -101,9 +101,6 @@ export class SourceLoader {
     const entry = catalog.profiles.find(profile => profile.id === profileId)
     if (!entry) throw new SourceValidationError(`catalog profile ${profileId} was not found`)
     const sourceIdentity = [entry.id, entry.version, entry.source.repository, entry.source.ref, entry.source.profilePath].join('|')
-    for (const [cacheKey, cached] of this.cache) {
-      if (cacheKey.startsWith(`${sourceIdentity}|`)) return cached
-    }
 
     const profileText = assertFetchedText(await this.source.read(entry.source.repository, entry.source.ref, entry.source.profilePath), entry.source.profilePath)
     const profileHash = contentHash(profileText)
@@ -115,6 +112,9 @@ export class SourceLoader {
     const expectedCasesHash = expectedHash(this.source, entry.source.repository, entry.source.ref, profile.casesPath)
     if (expectedCasesHash && expectedCasesHash !== casesHash) throw new SourceValidationError(`content hash mismatch for ${profile.casesPath}`)
     const cases = validateCases(parseJson(casesText, profile.casesPath), profile, entry)
+    const cacheIdentity = `${sourceIdentity}|${profileHash}|${casesHash}`
+    const cached = this.cache.get(cacheIdentity)
+    if (cached) return cached
     const snapshot = deepFreeze({
       catalogEntry: structuredClone(entry),
       profile: structuredClone(profile),
@@ -126,9 +126,10 @@ export class SourceLoader {
         casesPath: profile.casesPath,
         profileSha256: profileHash,
         casesSha256: casesHash,
+        cacheIdentity,
       }),
     })
-    this.cache.set(`${sourceIdentity}|${profileHash}|${casesHash}`, snapshot)
+    this.cache.set(cacheIdentity, snapshot)
     return snapshot
   }
 }

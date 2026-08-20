@@ -1,29 +1,46 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { LocalFixtureSource, SourceLoader } from '../src/catalog-loader.mjs'
 import { SourceValidationError } from '../src/validation.mjs'
 
-const projectRoot = new URL('../../', import.meta.url)
-const standardsRoot = new URL('../../dsh-plugin-evaluation-standards/', import.meta.url)
-const datasetRoot = new URL('../../dsh-security-evaluation-dataset/', import.meta.url)
+async function existingRoot(candidates, label) {
+  for (const candidate of candidates) {
+    try {
+      await access(candidate)
+      return candidate
+    } catch {
+      continue
+    }
+  }
+  throw new Error(`${label} checkout is required for source-loader tests`)
+}
+
+const homeRoot = process.env.HOME ?? tmpdir()
+const standardsRoot = await existingRoot([
+  process.env.STANDARDS_ROOT,
+  join(homeRoot, 'Desktop/dsh-project/dsh-plugin-evaluation-standards'),
+], 'dsh-plugin-evaluation-standards')
+const datasetRoot = await existingRoot([
+  process.env.DATASET_ROOT,
+  join(homeRoot, 'Desktop/dsh-project/dsh-security-evaluation-dataset'),
+], 'dsh-security-evaluation-dataset')
 const repository = 'https://github.com/dsh-plugin-evaluation/dsh-security-evaluation-dataset'
 const ref = 'v1.1.0'
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'dsh-loader-'))
-  await cp(new URL('profiles/', datasetRoot), join(root, 'profiles'), { recursive: true })
-  await cp(new URL('cases/', datasetRoot), join(root, 'cases'), { recursive: true })
+  await cp(join(datasetRoot, 'profiles'), join(root, 'profiles'), { recursive: true })
+  await cp(join(datasetRoot, 'cases'), join(root, 'cases'), { recursive: true })
   return root
 }
 
 async function catalogWith(source) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-catalog-'))
-  const catalog = JSON.parse(await readFile(new URL('catalog.json', standardsRoot), 'utf8'))
+  const catalog = JSON.parse(await readFile(join(standardsRoot, 'catalog.json'), 'utf8'))
   catalog.profiles[0].source = source
   await writeFile(join(root, 'catalog.json'), JSON.stringify(catalog))
   return { root, catalogPath: join(root, 'catalog.json') }
@@ -40,7 +57,7 @@ function sha256(text) {
 test('loads and freezes a catalog-governed offline snapshot without executing source code', async t => {
   const root = await fixture()
   t.after(() => rm(root, { recursive: true, force: true }))
-  const loader = new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source: new LocalFixtureSource(root) })
+  const loader = new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source: new LocalFixtureSource(root) })
 
   const snapshot = await loader.load('prompt-injection-basic-v1')
 
@@ -60,21 +77,44 @@ test('caches an immutable snapshot for a fixed source identity', async t => {
   let reads = 0
   const fixtureSource = new LocalFixtureSource(root)
   const source = { read: (...args) => { reads += 1; return fixtureSource.read(...args) } }
-  const loader = new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source })
+  const loader = new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source })
   const first = await loader.load('prompt-injection-basic-v1')
-  await writeFile(join(root, 'profiles/prompt-injection-basic-v1.json'), '{"changed":true}')
+  const profilePath = join(root, 'profiles/prompt-injection-basic-v1.json')
+  const profile = JSON.parse(await readFile(profilePath, 'utf8'))
+  profile.name = `${profile.name} changed`
+  await writeFile(profilePath, JSON.stringify(profile))
 
   const second = await loader.load('prompt-injection-basic-v1')
 
-  assert.strictEqual(second, first)
-  assert.equal(second.profile.version, '1.1.0')
-  assert.equal(reads, 2)
+  assert.notStrictEqual(second, first)
+  assert.equal(second.profile.name, `${first.profile.name} changed`)
+  assert.notEqual(second.provenance.profileSha256, first.provenance.profileSha256)
+  assert.equal(reads, 4)
+})
+
+test('reuses a cached snapshot only when both document hashes match', async t => {
+  const root = await fixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const cache = new Map()
+  const catalogPath = join(standardsRoot, 'catalog.json')
+  const first = await new SourceLoader({ catalogPath, source: new LocalFixtureSource(root), cache }).load('prompt-injection-basic-v1')
+  const profilePath = join(root, 'profiles/prompt-injection-basic-v1.json')
+  const profile = JSON.parse(await readFile(profilePath, 'utf8'))
+  profile.name = `${profile.name} changed`
+  await writeFile(profilePath, JSON.stringify(profile))
+
+  const second = await new SourceLoader({ catalogPath, source: new LocalFixtureSource(root), cache }).load('prompt-injection-basic-v1')
+
+  assert.notStrictEqual(second, first)
+  assert.equal(cache.size, 2)
+  assert(cache.has(second.provenance.cacheIdentity))
+  assert.match(second.provenance.cacheIdentity, new RegExp(`${second.provenance.profileSha256}\\|${second.provenance.casesSha256}$`))
 })
 
 test('loads schema-valid changed content with a new immutable content identity', async t => {
   const root = await fixture()
   t.after(() => rm(root, { recursive: true, force: true }))
-  const catalogPath = fileURLToPath(new URL('catalog.json', standardsRoot))
+  const catalogPath = join(standardsRoot, 'catalog.json')
   const first = await new SourceLoader({ catalogPath, source: new LocalFixtureSource(root) }).load('prompt-injection-basic-v1')
   const profilePath = join(root, 'profiles/prompt-injection-basic-v1.json')
   const profile = JSON.parse(await readFile(profilePath, 'utf8'))
@@ -100,7 +140,7 @@ test('validates expected SHA-256 hashes before accepting fetched content', async
     [`${repository}|${ref}|cases/prompt-injection-basic-v1.json`]: '0'.repeat(64),
   }
   await assertRejects(new SourceLoader({
-    catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)),
+    catalogPath: join(standardsRoot, 'catalog.json'),
     source: new LocalFixtureSource(root, { expectedHashes: hashes }),
   }), 'content hash mismatch')
 })
@@ -123,7 +163,7 @@ test('rejects invalid JSON from a source file', async t => {
   const root = await fixture()
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(join(root, 'profiles/prompt-injection-basic-v1.json'), '{invalid')
-  await assertRejects(new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source: new LocalFixtureSource(root) }), 'invalid JSON')
+  await assertRejects(new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source: new LocalFixtureSource(root) }), 'invalid JSON')
 })
 
 test('rejects profile version mismatch', async t => {
@@ -133,7 +173,7 @@ test('rejects profile version mismatch', async t => {
   const profile = JSON.parse(await readFile(profilePath, 'utf8'))
   profile.version = '9.9.9'
   await writeFile(profilePath, JSON.stringify(profile))
-  await assertRejects(new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source: new LocalFixtureSource(root) }), 'version must match catalog')
+  await assertRejects(new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source: new LocalFixtureSource(root) }), 'version must match catalog')
 })
 
 test('rejects changed content and cases path escape', async t => {
@@ -157,9 +197,15 @@ test('rejects encoded and separator traversal before any source read', async t =
     '../outside.json',
     '%2e%2e/outside.json',
     '%252e%252e/outside.json',
+    '%25252e%25252e/outside.json',
     '..%2foutside.json',
     '%2e%2e%2foutside.json',
+    '%252e%252e%252foutside.json',
     'profiles%2fprompt-injection-basic-v1.json',
+    'profiles%252fprompt-injection-basic-v1.json',
+    'profiles/%252e%252e/outside.json',
+    '%5c%5coutside.json',
+    '%255c%255coutside.json',
     'profiles/%2e%2e/outside.json',
     'profiles//prompt-injection-basic-v1.json',
     'profiles\\prompt-injection-basic-v1.json',
@@ -174,7 +220,7 @@ test('rejects encoded and separator traversal before any source read', async t =
 test('rejects catalog metadata that violates the standards contract', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-catalog-contract-'))
   t.after(() => rm(root, { recursive: true, force: true }))
-  const catalog = JSON.parse(await readFile(new URL('catalog.json', standardsRoot), 'utf8'))
+  const catalog = JSON.parse(await readFile(join(standardsRoot, 'catalog.json'), 'utf8'))
   delete catalog.profiles[0].scenarios
   await writeFile(join(root, 'catalog.json'), JSON.stringify(catalog))
   await assertRejects(new SourceLoader({
@@ -190,7 +236,7 @@ test('rejects profile cases path escape even when the profile itself is valid JS
   const profile = JSON.parse(await readFile(profilePath, 'utf8'))
   profile.casesPath = '../outside.json'
   await writeFile(profilePath, JSON.stringify(profile))
-  await assertRejects(new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source: new LocalFixtureSource(root) }), 'must not escape')
+  await assertRejects(new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source: new LocalFixtureSource(root) }), 'must not escape')
 })
 
 test('rejects changed case content when its version no longer matches the profile', async t => {
@@ -200,5 +246,5 @@ test('rejects changed case content when its version no longer matches the profil
   const cases = JSON.parse(await readFile(casesPath, 'utf8'))
   cases.version = '9.9.9'
   await writeFile(casesPath, JSON.stringify(cases))
-  await assertRejects(new SourceLoader({ catalogPath: fileURLToPath(new URL('catalog.json', standardsRoot)), source: new LocalFixtureSource(root) }), 'version must match profile')
+  await assertRejects(new SourceLoader({ catalogPath: join(standardsRoot, 'catalog.json'), source: new LocalFixtureSource(root) }), 'version must match profile')
 })
