@@ -16,3 +16,18 @@ The loader treats source files as data. It never imports, evaluates, or runs
 content from a source repository. Tests use a local fixture adapter keyed by a
 catalog-approved GitHub repository and ref; this keeps tests offline without
 weakening the catalog's HTTPS GitHub policy.
+
+## Local HTTP API
+
+The optional local server is exposed by `createLocalApiServer` and uses only
+Node's built-in `http` module. It serves the versioned `/api/v1` surface:
+
+- `GET /health`, `/status`, `/plugins`, `/sources`, `/runs`, and `/reports`
+- `POST /runs` to start a single managed evaluation
+- `GET /runs/:runId` and `POST /runs/:runId/cancel`
+- `GET /reports/:reportId` and `GET /reports/:reportId/export`
+
+Run requests accept only absolute local plugin paths, a non-empty prompt, and
+an optional bounded timeout. Request bodies are capped at 64 KiB. Responses,
+run output, errors, reports, and exports redact credential-like values. The API
+does not serve browser assets and does not read or write `.omo` state.
