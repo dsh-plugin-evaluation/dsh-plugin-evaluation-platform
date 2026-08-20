@@ -32,13 +32,18 @@ function json(res, status, body, headers = {}) {
 
 function validateRunInput(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw Object.assign(new Error('Request body must be an object'), { code: 'invalid-body' })
-  const allowed = ['pluginPaths', 'prompt', 'timeoutMs']
+  const allowed = ['pluginPaths', 'prompt', 'timeoutMs', 'provenance']
   if (Object.keys(body).some(key => !allowed.includes(key))) throw Object.assign(new Error('Request body contains unsupported fields'), { code: 'invalid-body' })
   if (!Array.isArray(body.pluginPaths) || body.pluginPaths.length === 0 || body.pluginPaths.length > MAX_PLUGIN_PATHS) throw Object.assign(new Error('pluginPaths must contain 1 to 32 paths'), { code: 'invalid-plugin-paths' })
   if (body.pluginPaths.some(path => typeof path !== 'string' || !isAbsolute(path) || path.includes('\0'))) throw Object.assign(new Error('pluginPaths must be absolute local paths'), { code: 'invalid-plugin-paths' })
   if (typeof body.prompt !== 'string' || body.prompt.trim() === '' || body.prompt.length > MAX_PROMPT_LENGTH) throw Object.assign(new Error('prompt is required and must be at most 32768 characters'), { code: 'invalid-prompt' })
   if (body.timeoutMs !== undefined && (!Number.isInteger(body.timeoutMs) || body.timeoutMs < 1 || body.timeoutMs > 600_000)) throw Object.assign(new Error('timeoutMs must be an integer from 1 to 600000'), { code: 'invalid-timeout' })
-  return { pluginPaths: [...body.pluginPaths], prompt: body.prompt, ...(body.timeoutMs === undefined ? {} : { timeoutMs: body.timeoutMs }) }
+  return {
+    pluginPaths: [...body.pluginPaths],
+    prompt: body.prompt,
+    ...(body.timeoutMs === undefined ? {} : { timeoutMs: body.timeoutMs }),
+    ...(body.provenance === undefined ? {} : { provenance: body.provenance }),
+  }
 }
 
 async function readBody(req) {
