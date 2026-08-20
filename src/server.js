@@ -28,6 +28,11 @@ export function createEvaluationServer({ host = createFixtureHost(), plugins = [
       res.end(index)
       return
     }
+    if (req.method === 'GET' && requestUrl.pathname === '/favicon.ico') {
+      res.writeHead(204, { 'cache-control': 'no-store' })
+      res.end()
+      return
+    }
     if (requestUrl.pathname.startsWith('/api/v1')) {
       apiServer.emit('request', req, res)
       return
