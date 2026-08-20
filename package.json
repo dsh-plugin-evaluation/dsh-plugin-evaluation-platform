@@ -1,7 +1,11 @@
 {
   "name": "@dsh-plugin-evaluation/evaluation-platform",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Local catalog-governed platform for evaluating DSH plugins",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dsh-plugin-evaluation/dsh-plugin-evaluation-platform"
+  },
   "type": "module",
   "main": "./src/index.js",
   "exports": {
