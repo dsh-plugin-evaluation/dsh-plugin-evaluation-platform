@@ -67,7 +67,12 @@ async function validatePlugin(path) {
   if (checksum.toLowerCase() !== manifest.dsh.bundle.sha256.toLowerCase()) {
     throw new DshRunError(`Plugin bundle checksum failed: ${path}`, 'plugin-checksum-mismatch', { path, expected: manifest.dsh.bundle.sha256, actual: checksum })
   }
-  return { name: manifest.name, checksum }
+  return {
+    name: manifest.name,
+    version: typeof manifest.version === 'string' ? manifest.version : undefined,
+    checksum,
+    manifestHash: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+  }
 }
 
 async function verifyActivation(dshHome, profile, pluginPaths, headlessBundle) {
@@ -118,7 +123,8 @@ export class ManagedDshHost {
     process.once('SIGINT', signalHandler)
     process.once('SIGTERM', signalHandler)
     try {
-      for (const path of pluginPaths) await validatePlugin(path)
+      const plugins = []
+      for (const path of pluginPaths) plugins.push({ path, ...(await validatePlugin(path)) })
       const runtime = await this.#runtimeResolver(this.#runtimeOptions)
       dataRoot = await mkdtemp(resolve(tmpdir(), this.#tempPrefix))
       const dshHome = resolve(dataRoot, 'dsh-home')
@@ -128,7 +134,18 @@ export class ManagedDshHost {
       const activation = await verifyActivation(dshHome, active.profile, pluginPaths, runtime.headlessBundle)
       const result = await this.#runChild([runtime.cli, '--profile', active.profile, prompt], { cwd: runtime.root, env, timeoutMs, active })
       this.#throwForProcess(result, 'DSH evaluation')
-      return { runId: active.runId, profile: active.profile, exitCode: result.exitCode, stdout: redact(result.stdout), stderr: redact(result.stderr), activation }
+      return {
+        runId: active.runId,
+        profile: active.profile,
+        exitCode: result.exitCode,
+        stdout: redact(result.stdout),
+        stderr: redact(result.stderr),
+        activation,
+        provenance: {
+          ...(this.#runtimeOptions.provenance ?? {}),
+          plugin: plugins.map(plugin => ({ name: plugin.name, ...(plugin.version === undefined ? {} : { version: plugin.version }), contentHash: plugin.checksum, manifestHash: plugin.manifestHash })),
+        },
+      }
     } finally {
       process.removeListener('SIGINT', signalHandler)
       process.removeListener('SIGTERM', signalHandler)
@@ -152,7 +169,13 @@ export class ManagedDshHost {
 
   #runChild(args, { cwd, env, timeoutMs, active }) {
     return new Promise((resolvePromise, reject) => {
-      const child = this.#spawn(process.execPath, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+      let child
+      try {
+        child = this.#spawn(process.execPath, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] })
+      } catch (error) {
+        reject(new DshRunError(`Unable to start DSH: ${error instanceof Error ? error.message : String(error)}`, 'spawn-failed'))
+        return
+      }
       active.child = child
       active.spawned = true
       let stdout = ''

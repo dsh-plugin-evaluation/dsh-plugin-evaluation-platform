@@ -23,12 +23,13 @@ async function pluginFixture({ bundle = true } = {}) {
   const root = await mkdtemp(resolve(tmpdir(), 'dsh-plugin-test-'))
   await writeFile(resolve(root, 'package.json'), JSON.stringify({
     name: 'test-plugin',
+    version: '1.2.3',
     ...(bundle ? { dsh: { bundle: { patch: './cordis.patch.yml' } } } : {}),
   }))
   if (bundle) await writeFile(resolve(root, 'cordis.patch.yml'), '[]\n')
   if (bundle) {
     const checksum = createHash('sha256').update('[]\n').digest('hex')
-    await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'test-plugin', dsh: { bundle: { patch: './cordis.patch.yml', sha256: checksum } } }))
+    await writeFile(resolve(root, 'package.json'), JSON.stringify({ name: 'test-plugin', version: '1.2.3', dsh: { bundle: { patch: './cordis.patch.yml', sha256: checksum } } }))
   }
   return root
 }
@@ -66,6 +67,9 @@ test('uses a private DSH_HOME and cleans it after success', async () => {
   const result = await host.start({ pluginPaths: [plugin], prompt: 'hello' })
   assert.notEqual(result.stdout, personalHome)
   assert.match(result.stdout, /dsh-home/)
+  assert.equal(result.provenance.plugin[0].version, '1.2.3')
+  assert.equal(result.provenance.plugin[0].contentHash.length, 64)
+  assert.equal(result.provenance.plugin[0].manifestHash.length, 64)
   assert.equal(host.status().running, false)
   await rm(runtime.root, { recursive: true, force: true })
   await rm(plugin, { recursive: true, force: true })
@@ -201,5 +205,14 @@ test('removes signal handlers after a pre-spawn failure', async () => {
   const host = new ManagedDshHost({ runtimeResolver: async () => { throw new Error('resolver failed') } })
   await assert.rejects(host.start({ pluginPaths: [plugin], prompt: 'hello' }), /resolver failed/)
   assert.equal(process.listenerCount('SIGTERM'), before)
+  await rm(plugin, { recursive: true, force: true })
+})
+
+test('classifies a synchronous spawn failure as spawn-failed', async () => {
+  const runtime = await fixture('process.exit(0)')
+  const plugin = await pluginFixture()
+  const host = new ManagedDshHost({ runtime: { env: { PLATFORM_DSH_ROOT: runtime.root } }, spawnProcess: () => { throw new Error('sync spawn boom') } })
+  await assert.rejects(host.start({ pluginPaths: [plugin], prompt: 'hello' }), error => error instanceof DshRunError && error.code === 'spawn-failed')
+  await rm(runtime.root, { recursive: true, force: true })
   await rm(plugin, { recursive: true, force: true })
 })
