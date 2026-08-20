@@ -9,6 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: dsh-plugin-evaluation/dsh-plugin-evaluation-standards
+          ref: v1.1.0
+          path: dsh-plugin-evaluation-standards
       - uses: actions/setup-node@v4
         with:
           node-version: 22
